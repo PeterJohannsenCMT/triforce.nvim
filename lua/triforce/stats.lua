@@ -1,3 +1,4 @@
+local uv = vim.uv or vim.loop
 local util = require('triforce.util')
 
 ---@class Triforce.Stats
@@ -112,20 +113,22 @@ function M.load()
 
   -- Recalculate level from XP to fix any inconsistencies
   -- (e.g., if user changed level progression config after playing)
-  if merged.xp and merged.xp > 0 then
-    local calculated_level = M.calculate_level(merged.xp)
-    if calculated_level ~= merged.level then
-      vim.notify(
-        ('Level mismatch detected! Recalculating from XP.\nOld level: %d → New level: %d (based on %d XP)'):format(
-          merged.level,
-          calculated_level,
-          merged.xp
-        ),
-        vim.log.levels.WARN,
-        { title = ' Triforce' }
-      )
-      merged.level = calculated_level
-    end
+  if not merged.xp or merged.xp <= 0 then
+    return merged
+  end
+
+  local calculated_level = M.calculate_level(merged.xp)
+  if calculated_level ~= merged.level then
+    vim.notify(
+      ('Level mismatch detected! Recalculating from XP.\nOld level: %d → New level: %d (based on %d XP)'):format(
+        merged.level,
+        calculated_level,
+        merged.xp
+      ),
+      vim.log.levels.WARN,
+      { title = ' Triforce' }
+    )
+    merged.level = calculated_level
   end
 
   return merged
@@ -404,6 +407,88 @@ function M.record_daily_activity(stats, lines_today)
   local current, longest = M.calculate_streaks(stats)
   stats.current_streak = current
   stats.longest_streak = longest
+end
+
+---Export data to a specified JSON file
+---@param stats Stats
+---@param target string
+---@param indent? string|nil
+function M.export_to_json(stats, target, indent)
+  util.validate({
+    stats = { stats, { 'table' } },
+    target = { target, { 'string' } },
+    indent = { indent, { 'string', 'nil' }, true },
+  })
+
+  local parent_stat = uv.fs_stat(vim.fn.fnamemodify(target, ':p:h'))
+  if not parent_stat or parent_stat.type ~= 'directory' then
+    vim.notify(('Target not in a valid directory: `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  if vim.fn.isdirectory(target) == 1 then
+    vim.notify(('Target is a directory: `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  local fd = uv.fs_open(target, 'w', tonumber('644', 8))
+  if not fd then
+    vim.notify(('Unable to open target `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  local ok, data = pcall(vim.json.encode, stats, { sort_keys = true, indent = indent })
+  if not ok then
+    uv.fs_close(fd)
+    vim.notify('Unable to encode stats!', vim.log.levels.ERROR)
+    return
+  end
+
+  uv.fs_write(fd, data)
+  uv.fs_close(fd)
+end
+
+---Export data to a specified Markdown file
+---@param stats Stats
+---@param target string
+function M.export_to_md(stats, target)
+  util.validate({
+    stats = { stats, { 'table' } },
+    target = { target, { 'string' } },
+  })
+
+  local parent_stat = uv.fs_stat(vim.fn.fnamemodify(target, ':p:h'))
+  if not parent_stat or parent_stat.type ~= 'directory' then
+    vim.notify(('Target not in a valid directory: `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  if vim.fn.isdirectory(target) == 1 then
+    vim.notify(('Target is a directory: `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  local fd = uv.fs_open(target, 'w', tonumber('644', 8))
+  if not fd then
+    vim.notify(('Unable to open target `%s`'):format(target), vim.log.levels.ERROR)
+    return
+  end
+
+  local data = '# Triforce Stats\n'
+  for k, v in pairs(stats) do
+    data = ('%s\n## %s\n\n**Value**:'):format(data, k:sub(1, 1):upper() .. k:sub(2))
+    if type(v) == 'table' then
+      data = ('%s\n'):format(data)
+      for key, val in pairs(v) do
+        data = ('%s- **%s**: %s\n'):format(data, key, vim.inspect(val))
+      end
+    else
+      data = ('%s %s\n'):format(data, tostring(v))
+    end
+  end
+
+  uv.fs_write(fd, data)
+  uv.fs_close(fd)
 end
 
 return M
